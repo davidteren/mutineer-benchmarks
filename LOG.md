@@ -187,3 +187,11 @@ Captured by `bench/sysinfo` (also embedded in every JSONL row as `machine`):
 ### 15:35 — Daemon whole-app reload run
 - Still running after 65 min (serial, see 14:46); its row is appended to
   `results/fizzy.jsonl` by `bin/run` when it finishes.
+
+### 15:45 — Daemon whole-app reload run lost
+- `bin/run` (pid 572814) exited between 15:35 and 15:45 after ~70 min with
+  no mutineer report and no JSONL row. bin/run buffers mutineer's output
+  (Open3.capture2e), so the cause is unknown. Likely factor: its parent
+  wrapper was killed at 14:46 to cancel the queued redefine run.
+- **Follow-up:** have bin/run stream mutineer output to a per-run log file,
+  and rerun `--only models-all-daemon-reload` on a quiet machine.
