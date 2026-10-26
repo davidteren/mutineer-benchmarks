@@ -12,6 +12,8 @@ require "open3"
 require "optparse"
 require "time"
 require "etc"
+require "zlib"
+require "fileutils"
 
 ROOT = File.expand_path("..", __dir__)
 MUTINEER_REPO = "https://github.com/davidteren/mutineer"
@@ -86,21 +88,35 @@ pick.(target.fetch("dry_runs", [])).each do |d|
         declined: tail[/(\d+) declined/, 1]&.to_i, raw: tail.strip)
 end
 
-pick.(target.fetch("cases", [])).each do |c|
+all_cases = target.fetch("cases", []) + (opts[:only] ? target.fetch("long_cases", []) : [])
+pick.(all_cases).each do |c|
   opts[:repeat].times do |i|
     report = File.join(app, "tmp", "bench-#{c['id']}.json")
-    cmd = ["bundle", "exec", "mutineer", "run", *c["source"], *c["tests"].flat_map { |t| ["--test", t] },
+    tests = c.fetch("tests", []) + Array(c["tests_glob"]).flat_map { |g| Dir.glob(g, base: app).sort }
+    cmd = ["bundle", "exec", "mutineer", "run", *c["source"], *tests.flat_map { |t| ["--test", t] },
            *c.fetch("args", []), "--format", "json", "--output", report]
     cmd += ["--operators", ops.(c)] if c["operators"]
+    load_before = File.exist?("/proc/loadavg") ? File.read("/proc/loadavg").split.first(3).map(&:to_f) : nil
     t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
     out, st = Open3.capture2e(env, *cmd, chdir: app)
     wall = Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0
+    load_after = File.exist?("/proc/loadavg") ? File.read("/proc/loadavg").split.first(3).map(&:to_f) : nil
     s = File.exist?(report) ? JSON.parse(File.read(report))["summary"] : {}
+    # Keep the full report per run (gzipped) so an outlier can be explained later.
+    kept = nil
+    if File.exist?(report)
+      dir = File.join(ROOT, "results", "reports", name)
+      FileUtils.mkdir_p(dir)
+      kept = File.join(dir, "#{Time.now.utc.strftime('%Y%m%dT%H%M%SZ')}-#{meta[:mutineer_sha]}-#{c['id']}-#{i + 1}.json.gz")
+      Zlib::GzipWriter.open(kept) { |gz| gz.write(File.read(report)) }
+      kept = kept.delete_prefix("#{ROOT}/")
+    end
     unrun = s.values_at("unplaceable", "skipped_invalid").compact.sum
     tried = s.fetch("attempted", 0) + unrun
     emit.(kind: "run", id: c["id"], iteration: i + 1, exit: st.exitstatus, wall_s: wall.round(3),
           attempted_per_s: wall.positive? ? (s.fetch("attempted", 0) / wall).round(3) : nil,
           unrun_share: tried.positive? ? (unrun.to_f / tried).round(4) : nil,
-          unrun_warning: out.include?("were not run"), summary: s)
+          unrun_warning: out.include?("were not run"), load_before: load_before, load_after: load_after,
+          report: kept, summary: s)
   end
 end

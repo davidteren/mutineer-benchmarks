@@ -1,13 +1,18 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
-# Usage: bin/compare TARGET  — median wall_s and counts per (mutineer_version, case).
+# Usage: bin/compare TARGET — per (case, ref, code sha): every wall time, the
+# median, attempted/s at the median, and the counts of the median run.
 require "json"
 rows = File.readlines(File.expand_path("../results/#{ARGV.fetch(0)}.jsonl", __dir__)).map { |l| JSON.parse(l) }
-med = ->(a) { s = a.sort; s[s.size / 2] }
-rows.select { |r| r["kind"] == "run" }.group_by { |r| [r["id"], r["mutineer_version"], r["mutineer_sha"]] }.sort.each do |(id, v, sha), rs|
-  s = rs.last["summary"]
-  printf "%-24s %-16s %-8s n=%d wall=%7.2fs  /s=%6.2f  total=%s killed=%s survived=%s no_cov=%s unrun=%s declined=%s score=%s\n",
-         id, v, sha, rs.size, med.(rs.map { _1["wall_s"] }), med.(rs.map { _1["attempted_per_s"].to_f }),
-         s["total"], s["killed"], s["survived"], s["no_coverage"],
-         s.values_at("unplaceable", "skipped_invalid").compact.sum, s["declined"], s["score"]
+rows.select { |r| r["kind"] == "dry_run" }.each do |r|
+  printf "dry  %-24s %-16s mutations=%s skipped_invalid=%s declined=%s\n", r["id"], r["ref"], r["mutations"], r["skipped_invalid"], r["declined"] || "n/a"
+end
+rows.select { |r| r["kind"] == "run" }.group_by { |r| [r["id"], r["ref"], r["mutineer_code_sha"] || r["mutineer_sha"]] }.each do |(id, ref, sha), rs|
+  sorted = rs.sort_by { _1["wall_s"] }
+  m = sorted[sorted.size / 2]
+  s = m["summary"]
+  printf "run  %-24s %-16s %-8s n=%d walls=%s median=%.1fs /s=%.2f total=%s killed=%s survived=%s no_cov=%s errored=%s timeout=%s unrun_share=%s declined=%s score=%s\n",
+         id, ref, sha, rs.size, rs.map { _1["wall_s"].round(1) }.inspect, m["wall_s"], m["attempted_per_s"].to_f,
+         s["total"], s["killed"], s["survived"], s["no_coverage"], s["errored"], s["timeout"], m["unrun_share"],
+         s["declined"] || "n/a", s["score"].inspect
 end

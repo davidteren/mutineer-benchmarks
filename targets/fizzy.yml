@@ -70,3 +70,18 @@ dry_runs:
   - id: slice-all-ops
     source: *slice_sources
     operators: all
+# #349: every model under redefine, every operator. Long (~1.5 h serial).
+# Run explicitly: bin/run fizzy ... --only models-all-redefine
+long_cases: &long
+  - id: models-all-redefine
+    source: [app/models]
+    tests_glob: ["test/models/**/*_test.rb"]
+    operators: all
+    args: [--rails, --strategy, redefine]
+  # --daemon is whole-file reload only (Config: "daemon is whole-file reload
+  # only"), so the parallel variant uses reload; redefine above stays serial.
+  - id: models-all-daemon-reload
+    source: [app/models]
+    tests_glob: ["test/models/**/*_test.rb"]
+    operators: all
+    args: [--rails, --daemon, --jobs, "8", --strategy, reload]

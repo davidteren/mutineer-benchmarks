@@ -99,3 +99,42 @@ Captured by `bench/sysinfo` (also embedded in every JSONL row as `machine`):
 - mutineer's local `benchmark/fizzy-harness` keeps only code fixes; the
   bench/ commits are dropped there after the in-flight benchmark (which runs
   from that worktree) finishes. mutineer is not pushed.
+
+### 13:39–13:45 — mutineer-benchmarks repo
+- Cloned github.com/davidteren/mutineer-benchmarks (empty) to
+  /workspace/mutineer-benchmarks. Pushed `docs: add README` to main (64a5d6f)
+  and the harness to `benchmark/fizzy-harness` (635f1f1). No PR.
+- `bin/run` gained per-run gzipped reports (`results/reports/`), load average
+  before/after each run, and `tests_glob` for whole-directory cases.
+
+### 13:33–14:29 — Slice benchmark, v1.7.0 vs fixed branch (median of 3)
+- **Process:** `/workspace/bench-all.sh` under nohup, serial, nothing else
+  benchmarking; v1.7.0 from a detached worktree (ef5f17f), then the branch.
+- **Duration:** 56 min (1.7.0: 24 min; branch: 32 min).
+- **Outlier:** v1.7.0 redefine iteration 3 took 667.7 s vs ~280 s, with one
+  mutant flipping survived -> timeout. Load average was <1 during it. A 10 s
+  per-mutant timeout cannot add ~380 s, so every mutant ran slower: VM noise.
+  The median ignores it; per-run load average and reports are now recorded so
+  the next outlier can be explained.
+- **Rows** for the branch were recorded with mutineer_sha 3c5868d (the then
+  branch head incl. bench commits). Its lib/ and test/ are byte-identical to
+  8b9fb5b (`git diff 3c5868d 8b9fb5b -- lib test` empty), so rows carry
+  `mutineer_code_sha: 8b9fb5b` and ref `branch-8b9fb5b`.
+
+### 14:29 — Interruption
+- The supervising agent's wait was aborted at ~14:27; the benchmark itself
+  was under nohup and finished at 14:29 unaffected. From here on, every long
+  run is started with nohup and logs to /workspace/*.log.
+
+### 14:30 — mutineer branch reduced to code fixes only
+- A `git rebase --onto` dropping the bench commits conflicted on bench files
+  and was aborted. Instead: reset the local branch to e23e4a4 and
+  cherry-picked the fix: **8b9fb5b** (was 41d6d96). Not pushed.
+
+### 14:30 — Daemon probe and #349 plan
+- `--daemon --jobs 4` on closeable: 25 mutants, 17/5/3, 0 errored, 24 s:
+  same verdicts as serial. But Config notes "daemon is whole-file reload
+  only", so a redefine run cannot be parallelised.
+- **Decision:** run both: `models-all-daemon-reload` (`--daemon --jobs 8`)
+  first for a fast whole-app answer, then `models-all-redefine` serial (what
+  #349 asks for). Started 14:31 under nohup (`/workspace/bench-long.sh`).
