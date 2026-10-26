@@ -1,0 +1,13 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+# Usage: bin/compare TARGET  — median wall_s and counts per (mutineer_version, case).
+require "json"
+rows = File.readlines(File.expand_path("../results/#{ARGV.fetch(0)}.jsonl", __dir__)).map { |l| JSON.parse(l) }
+med = ->(a) { s = a.sort; s[s.size / 2] }
+rows.select { |r| r["kind"] == "run" }.group_by { |r| [r["id"], r["mutineer_version"], r["mutineer_sha"]] }.sort.each do |(id, v, sha), rs|
+  s = rs.last["summary"]
+  printf "%-24s %-16s %-8s n=%d wall=%7.2fs  /s=%6.2f  total=%s killed=%s survived=%s no_cov=%s unrun=%s declined=%s score=%s\n",
+         id, v, sha, rs.size, med.(rs.map { _1["wall_s"] }), med.(rs.map { _1["attempted_per_s"].to_f }),
+         s["total"], s["killed"], s["survived"], s["no_coverage"],
+         s.values_at("unplaceable", "skipped_invalid").compact.sum, s["declined"], s["score"]
+end

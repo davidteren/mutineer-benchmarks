@@ -1,0 +1,22 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+# Prints the machine spec as one JSON object. bin/run embeds it in every row.
+require "json"
+require "etc"
+
+def read(path) = File.exist?(path) ? File.read(path) : ""
+def cmd(c) = (IO.popen(c, err: File::NULL, &:read).strip rescue "") # rubocop:disable Style/RescueModifier
+
+cpuinfo = read("/proc/cpuinfo")
+model = cpuinfo[/^model name\s*:\s*(.+)$/, 1] || cmd("sysctl -n machdep.cpu.brand_string")
+mem_kb = read("/proc/meminfo")[/^MemTotal:\s+(\d+)/, 1]&.to_i
+mem_gb = mem_kb ? (mem_kb / 1024.0 / 1024).round(1) : (cmd("sysctl -n hw.memsize").to_i / 1024.0**3).round(1)
+os = read("/etc/os-release")[/^PRETTY_NAME="?([^"\n]+)/, 1] || cmd("sw_vers -productName") + " " + cmd("sw_vers -productVersion")
+df = cmd("df -Pk #{ARGV[0] || Dir.pwd}").lines.last.to_s.split
+info = {
+  cpu_model: model&.strip, cpus: Etc.nprocessors, mem_gb: mem_gb,
+  os: os.strip, kernel: "#{Etc.uname[:sysname]} #{Etc.uname[:release]}", arch: Etc.uname[:machine],
+  ruby: RUBY_DESCRIPTION, disk_device: df[0], disk_size_gb: df[1] && (df[1].to_i / 1024.0**2).round(1),
+  disk_free_gb: df[3] && (df[3].to_i / 1024.0**2).round(1), host: Etc.uname[:nodename]
+}
+puts JSON.generate(info)

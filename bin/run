@@ -1,0 +1,106 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+# Usage: bin/run TARGET (--mutineer DIR | --mutineer-ref REF) [--app-dir DIR]
+#                       [--repeat N] [--ref LABEL] [--only IDS]
+# Clones TARGET's app at its pinned sha (or reuses --app-dir), points its Gemfile at
+# a mutineer checkout (a local path, or a git ref checked out
+# into tmp/mutineer-<ref>), times each case, and appends one JSON line per run to
+# results/TARGET.jsonl. Stdlib only.
+require "yaml"
+require "json"
+require "open3"
+require "optparse"
+require "time"
+require "etc"
+
+ROOT = File.expand_path("..", __dir__)
+MUTINEER_REPO = "https://github.com/davidteren/mutineer"
+opts = { repeat: 1 }
+OptionParser.new do |o|
+  o.on("--app-dir DIR") { |v| opts[:app_dir] = File.expand_path(v) }
+  o.on("--repeat N", Integer) { |v| opts[:repeat] = v }
+  o.on("--ref LABEL") { |v| opts[:ref] = v }
+  o.on("--mutineer DIR", "local mutineer checkout to benchmark") { |v| opts[:mutineer] = File.expand_path(v) }
+  o.on("--mutineer-ref REF", "mutineer tag, branch or sha (fetched from #{MUTINEER_REPO})") { |v| opts[:mutineer_ref] = v }
+  o.on("--only IDS", "comma-separated case/dry-run ids") { |v| opts[:only] = v.split(",") }
+end.parse!
+name = ARGV.fetch(0) { abort "usage: bin/run TARGET (--mutineer DIR | --mutineer-ref REF) [--app-dir DIR] [--repeat N]" }
+target = YAML.safe_load_file(File.join(ROOT, "targets/#{name}.yml"), aliases: true)
+env = target.fetch("env", {}).transform_values(&:to_s)
+
+def sh!(env, cmd, dir)
+  out, st = Open3.capture2e(env, cmd, chdir: dir)
+  abort "FAILED (#{dir}): #{cmd}\n#{out}" unless st.success?
+  out
+end
+
+if opts[:mutineer_ref]
+  base = File.join(ROOT, "tmp", "mutineer")
+  sh!({}, "git clone -q #{MUTINEER_REPO} #{base}", ROOT) unless File.directory?(base)
+  sh!({}, "git fetch -q --tags origin", base)
+  ref = opts[:mutineer_ref]
+  dir = File.join(ROOT, "tmp", "mutineer-#{ref.tr('/', '-')}")
+  sh!({}, "git worktree add -q --detach #{dir} #{ref}", base) unless File.directory?(dir)
+  opts[:mutineer] = dir
+  opts[:ref] ||= ref
+end
+abort "pass --mutineer DIR or --mutineer-ref REF" unless opts[:mutineer]
+
+app = opts[:app_dir] || File.join(ROOT, "tmp", name)
+unless File.directory?(app)
+  sh!({}, "git clone -q #{target['repo']} #{app}", ROOT)
+  sh!({}, "git checkout -q #{target['sha']}", app)
+end
+app_sha = sh!({}, "git rev-parse HEAD", app).strip
+warn "[bench] app sha #{app_sha} differs from pinned #{target['sha']}" if app_sha != target["sha"]
+
+gemfile = File.join(app, "Gemfile")
+line = %(gem "mutineer", path: "#{opts[:mutineer]}", group: :test # bench)
+kept = File.read(gemfile).lines.reject { |l| l.include?("# bench") }.join.rstrip
+File.write(gemfile, "#{kept}\n#{line}\n")
+target.fetch("setup", []).each { |c| sh!(env, c, app) }
+
+ops_all = sh!(env, "bundle exec mutineer run --list-operators", app).lines.map { |l| l.split.first }.compact.join(",")
+ops = ->(c) { c["operators"] == "all" ? ops_all : c["operators"] }
+version = sh!(env, "bundle exec mutineer --version", app).strip
+meta = {
+  target: name, app_sha: app_sha, mutineer_version: version,
+  mutineer_sha: sh!({}, "git rev-parse --short HEAD", opts[:mutineer]).strip, ref: opts[:ref],
+  ruby: RUBY_VERSION, host: Etc.uname[:nodename], cpus: Etc.nprocessors,
+  machine: JSON.parse(sh!({}, "#{RbConfig.ruby} #{File.join(ROOT, 'bin/sysinfo')} #{app}", ROOT))
+}
+results = File.join(ROOT, "results/#{name}.jsonl")
+emit = lambda do |row|
+  File.open(results, "a") { |f| f.puts(JSON.generate(meta.merge(at: Time.now.utc.iso8601).merge(row))) }
+  puts JSON.generate(row)
+end
+
+pick = ->(list) { opts[:only] ? list.select { |x| opts[:only].include?(x["id"]) } : list }
+pick.(target.fetch("dry_runs", [])).each do |d|
+  cmd = ["bundle", "exec", "mutineer", "run", *d["source"], "--dry-run"]
+  cmd += ["--operators", ops.(d)] if d["operators"]
+  out, = Open3.capture2e(env, *cmd, chdir: app)
+  tail = out.lines.grep(/mutations \(dry run/).last.to_s
+  emit.(kind: "dry_run", id: d["id"],
+        mutations: tail[/(\d+) mutations/, 1]&.to_i, skipped_invalid: tail[/(\d+) skipped/, 1]&.to_i,
+        declined: tail[/(\d+) declined/, 1]&.to_i, raw: tail.strip)
+end
+
+pick.(target.fetch("cases", [])).each do |c|
+  opts[:repeat].times do |i|
+    report = File.join(app, "tmp", "bench-#{c['id']}.json")
+    cmd = ["bundle", "exec", "mutineer", "run", *c["source"], *c["tests"].flat_map { |t| ["--test", t] },
+           *c.fetch("args", []), "--format", "json", "--output", report]
+    cmd += ["--operators", ops.(c)] if c["operators"]
+    t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    out, st = Open3.capture2e(env, *cmd, chdir: app)
+    wall = Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0
+    s = File.exist?(report) ? JSON.parse(File.read(report))["summary"] : {}
+    unrun = s.values_at("unplaceable", "skipped_invalid").compact.sum
+    tried = s.fetch("attempted", 0) + unrun
+    emit.(kind: "run", id: c["id"], iteration: i + 1, exit: st.exitstatus, wall_s: wall.round(3),
+          attempted_per_s: wall.positive? ? (s.fetch("attempted", 0) / wall).round(3) : nil,
+          unrun_share: tried.positive? ? (unrun.to_f / tried).round(4) : nil,
+          unrun_warning: out.include?("were not run"), summary: s)
+  end
+end

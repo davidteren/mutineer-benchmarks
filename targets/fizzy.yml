@@ -1,0 +1,72 @@
+# Benchmark target: Basecamp Fizzy (Rails main / 8.2.0.alpha, Minitest, SQLite).
+name: fizzy
+repo: https://github.com/basecamp/fizzy
+sha: aef43ac9c9476f0b28856f5bbd1b8700f27a38f0
+env:
+  RAILS_ENV: test
+setup:
+  - bundle config set --local path vendor/bundle
+  - bundle install
+  - bin/rails db:prepare
+# The standard slice: 15 model concerns (Card, Board, User, Identity, Account)
+# with a matching test file each; ~332 mutants with every operator at the
+# pinned sha. Each case is one timed `mutineer run`; `operators: all` expands
+# to every operator mutineer lists.
+slice:
+  sources: &slice_sources
+    - app/models/card/golden.rb
+    - app/models/card/taggable.rb
+    - app/models/card/statuses.rb
+    - app/models/board/publishable.rb
+    - app/models/user/mentionable.rb
+    - app/models/identity/transferable.rb
+    - app/models/card/eventable.rb
+    - app/models/card/watchable.rb
+    - app/models/account/cancellable.rb
+    - app/models/card/pinnable.rb
+    - app/models/card/closeable.rb
+    - app/models/card/stallable.rb
+    - app/models/card/triageable.rb
+    - app/models/card/assignable.rb
+    - app/models/card/postponable.rb
+  tests: &slice_tests
+    - test/models/card/golden_test.rb
+    - test/models/card/taggable_test.rb
+    - test/models/card/statuses_test.rb
+    - test/models/board/publishable_test.rb
+    - test/models/user/mentionable_test.rb
+    - test/models/identity/transferable_test.rb
+    - test/models/card/eventable_test.rb
+    - test/models/card/watchable_test.rb
+    - test/models/account/cancellable_test.rb
+    - test/models/card/pinnable_test.rb
+    - test/models/card/closeable_test.rb
+    - test/models/card/stallable_test.rb
+    - test/models/card/triageable_test.rb
+    - test/models/card/assignable_test.rb
+    - test/models/card/postponable_test.rb
+cases:
+  - id: slice-all-redefine
+    source: *slice_sources
+    tests: *slice_tests
+    operators: all
+    args: [--rails, --strategy, redefine]
+  - id: slice-all-reload
+    source: *slice_sources
+    tests: *slice_tests
+    operators: all
+    args: [--rails, --strategy, reload]
+  # Smoke case: one concern, quick to rerun while debugging.
+  - id: closeable-all-reload
+    source: [app/models/card/closeable.rb]
+    tests: [test/models/card/closeable_test.rb]
+    operators: all
+    args: [--rails, --strategy, reload]
+# Dry runs: mutation and declined counts only (no tests run, no JSON report).
+dry_runs:
+  - id: models-all-ops
+    source: [app/models]
+    operators: all
+  - id: slice-all-ops
+    source: *slice_sources
+    operators: all
