@@ -138,3 +138,52 @@ Captured by `bench/sysinfo` (also embedded in every JSONL row as `machine`):
 - **Decision:** run both: `models-all-daemon-reload` (`--daemon --jobs 8`)
   first for a fast whole-app answer, then `models-all-redefine` serial (what
   #349 asks for). Started 14:31 under nohup (`/workspace/bench-long.sh`).
+
+### 14:46 — Daemon run is serial on Fizzy (multi-database)
+- **Observed:** `models-all-daemon-reload` with `--jobs 8` ran one daemon
+  and one child at a time (load ~1.1).
+- **Cause (by design):** `DaemonBackend.prepare_run` drops to one worker when
+  the app has more than one database ("Parallel runs support one database").
+  Fizzy's test env has two (primary + cable). A feature gap, not a bug; noted
+  for David. The run continues as a serial whole-app reload datapoint.
+
+### 14:48 — #349 redefine run sharded across 4 Fizzy copies
+- **Why:** #349 needs counts (declined, unplaceable, skipped-invalid,
+  attempted, warning), not wall time; serial would take ~1.5 h on top of the
+  serial daemon run.
+- **How:** `cp -a` Fizzy into /workspace/fizzy-shard1..4 (own SQLite files,
+  fresh `db:prepare`), split the 165 `app/models` files into 4 groups of
+  ~47 KB by size (`/workspace/shards.rb`), each shard runs
+  `mutineer run <files> --test <all 104 test/models files> --rails
+  --strategy redefine --operators all --format json` under nohup
+  (`/workspace/shard-run.sh`). Summaries are summed afterwards; the
+  stderr unrun warning is checked per shard (the threshold is per run, so the
+  share is also recomputed on the merged counts).
+- The queued serial `models-all-redefine` was cancelled (killed the wrapper
+  script; the in-flight daemon run continues).
+
+### 15:00–15:19 — Second interruption
+- The supervising agent was interrupted again; all nohup runs (4 shards and
+  the daemon run) survived and were not restarted.
+
+### 14:49–15:25 — #349 results (sharded redefine, branch 8b9fb5b)
+- Shard walls: 1832.0 / 2278.5 / 1979.9 / 2183.0 s (4 concurrent shards plus
+  the serial daemon run on 8 vCPUs; wall times are not comparable to the
+  quiet slice runs).
+- Merged summary: total 5713, attempted 4652, killed 3485, survived 1085
+  (score 76.3%), no_coverage 987, ran_at_load 14, timeout 82, errored 0,
+  uncapturable 0, unplaceable 54, skipped_invalid 6, declined 93
+  (call_to_receiver 53, chain_link 23, statement_removal 10, return_nil 4,
+  range 3).
+- Unrun share = (54 + 6) / (4652 + 60) = 1.27%; the stderr warning fired in
+  no shard and would not fire on the merged counts (limit 10%).
+- **Conclusion for #349:** on a concern-heavy real app the unrun share is
+  ~1.3%, an order of magnitude under `UNRUN_SHARE_LIMIT = 0.10`; no evidence
+  the limit needs lowering for false alarms, and it would catch a 8x worse
+  app. Recommend keeping 10%.
+- Raw shard reports: `results/reports/fizzy/*-shard*.json.gz`; shard
+  scripts: `bin/shards.rb`, `bin/shard-run.sh` (one-off; hardcoded paths).
+
+### 15:35 — Daemon whole-app reload run
+- Still running after 65 min (serial, see 14:46); its row is appended to
+  `results/fizzy.jsonl` by `bin/run` when it finishes.
